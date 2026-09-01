@@ -1,0 +1,32 @@
+line-length = 120
+
+# Forked from nanoGPT: upstream style, excluded so the linter doesn't rewrite it wholesale.
+exclude = ["multi_gpu_llm_lab/model.py"]
+
+[lint]
+select = [
+    "A", # flake8-builtins
+    "B", # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "S", # flake8-bandit
+    "D", "E", "W", # pydocstyle
+    "F", # pyflakes
+    "I", # isort
+    "RUF", # specific ruff rules
+]
+ignore = [
+    "D100",  # Missing docstring in public module
+    "D104",  # Missing docstring in public package
+    "D107",  # Missing docstring in classes `__init__`
+]
+
+[lint.per-file-ignores]
+"*tests/*" = ["D", "S101"]
+
+[lint.pydocstyle]
+convention = "google"
+
+[lint.isort]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+known-local-folder = ["tests"]
