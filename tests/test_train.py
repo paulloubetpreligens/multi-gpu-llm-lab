@@ -4,14 +4,20 @@ import pytest
 import torch
 from torch.utils.data import DataLoader, SequentialSampler
 
+from multi_gpu_llm_lab.configs import DataConfig, OptimConfig, RuntimeConfig, TrainerConfig
 from multi_gpu_llm_lab.data import SyntheticDataset
 from multi_gpu_llm_lab.model import GPT
-from multi_gpu_llm_lab.train import Trainer, TrainerConfig, evaluate, get_trainer
+from multi_gpu_llm_lab.train import Trainer, evaluate, get_trainer
 
 
 @pytest.fixture
 def config():
-    return TrainerConfig(model="tiny", optimizer="adamw", dataset="synthetic", val_dataset="synthetic", device="cpu")
+    return TrainerConfig(
+        model="tiny",
+        runtime=RuntimeConfig(device="cpu"),
+        data=DataConfig(train="synthetic", val="synthetic"),
+        optim=OptimConfig(name="adamw"),
+    )
 
 
 def test_trainer_holds_the_parts_it_is_given():
@@ -35,7 +41,7 @@ def test_get_trainer_builds_the_named_model_preset(config):
 
 
 def test_get_trainer_with_a_fused_optimizer_name_sets_the_fused_flag(config):
-    config.optimizer = "adamw_fused"
+    config.optim.name = "adamw_fused"
 
     trainer = get_trainer(config)
 
@@ -49,7 +55,7 @@ def test_get_trainer_defaults_to_an_unfused_optimizer(config):
 
 
 def test_get_trainer_with_unknown_optimizer_raises_error(config):
-    config.optimizer = "shampoo"
+    config.optim.name = "shampoo"
 
     with pytest.raises(KeyError):
         get_trainer(config)
@@ -60,7 +66,7 @@ def test_get_trainer_yields_batches_shaped_for_the_model(config):
 
     inputs, _ = next(iter(trainer.dataloader))
 
-    assert inputs.shape == (config.micro_batch, trainer.model.config.block_size)
+    assert inputs.shape == (config.optim.micro_batch, trainer.model.config.block_size)
 
 
 def test_get_trainer_yields_long_tensors_for_embedding_lookup(config):
@@ -119,11 +125,11 @@ def test_get_trainer_builds_disjoint_train_and_validation_blocks(config):
 def test_get_trainer_without_an_eval_batch_reuses_the_micro_batch(config):
     trainer = get_trainer(config)
 
-    assert trainer.val_dataloader.batch_size == config.micro_batch
+    assert trainer.val_dataloader.batch_size == config.optim.micro_batch
 
 
 def test_get_trainer_with_an_eval_batch_overrides_the_validation_batch_size(config):
-    config.eval_batch = 2
+    config.eval.batch = 2
 
     trainer = get_trainer(config)
 

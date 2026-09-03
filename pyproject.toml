@@ -12,7 +12,12 @@ dependencies = [
     "torch>=2.11.0,<3.0.0",
     "transformers>=5.5.0,<6.0.0",
     "tiktoken>=0.8,<1.0",
+    "pyyaml>=6.0,<7.0",
+    "typer>=0.15,<1.0",
 ]
+
+[project.scripts]
+mgll = "multi_gpu_llm_lab.entrypoints.app:app"
 
 [dependency-groups]
 dev = [
@@ -20,6 +25,7 @@ dev = [
     "pytest>=8.3,<9",
     "pytest-cov>=6.1,<7",
     "ruff>=0.15,<1",
+    "types-pyyaml>=6.0,<7.0",
 ]
 
 [build-system]

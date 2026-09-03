@@ -1,38 +1,17 @@
 """Train a model."""
 
-from dataclasses import dataclass
 from itertools import islice
 
 import torch
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, Dataset
 
-from multi_gpu_llm_lab.configs import build_model_config
+from multi_gpu_llm_lab.configs import TrainerConfig, build_model_config
 from multi_gpu_llm_lab.data import build_dataset
 from multi_gpu_llm_lab.device import select_device
 from multi_gpu_llm_lab.model import GPT
 
 OPTIMIZERS: dict[str, bool] = {"adamw": False, "adamw_fused": True}
-
-
-@dataclass
-class TrainerConfig:
-    """Names resolved to objects by `get_trainer`.
-
-    Every optimization defaults OFF: this is the unoptimized baseline.
-    """
-
-    model: str = "tiny"
-    optimizer: str = "adamw"
-    dataset: str = "synthetic"
-    val_dataset: str = "synthetic"
-    device: str = "auto"
-    micro_batch: int = 4
-    workers: int = 0
-    learning_rate: float = 6e-4
-    eval_interval: int = 100
-    eval_iters: int = 20
-    eval_batch: int | None = None
 
 
 class Trainer:
@@ -75,23 +54,23 @@ def build_dataloader(dataset: Dataset, batch_size: int, workers: int, *, train: 
 def get_trainer(config: TrainerConfig | None = None) -> Trainer:
     """Build every part described by `config` and hand them to a trainer."""
     config = config or TrainerConfig()
-    device = select_device() if config.device == "auto" else config.device
+    device = select_device() if config.runtime.device == "auto" else config.runtime.device
 
     model_config = build_model_config(config.model)
     model = GPT(model_config).to(device)
-    optimizer = build_optimizer(config.optimizer, model, config.learning_rate)
+    optimizer = build_optimizer(config.optim.name, model, config.optim.learning_rate)
     shape = {"block_size": model_config.block_size, "vocab_size": model_config.vocab_size}
     # Seeds differ so the synthetic validation blocks never overlap the training ones.
     dataloader = build_dataloader(
-        build_dataset(config.dataset, seed=0, **shape),
-        batch_size=config.micro_batch,
-        workers=config.workers,
+        build_dataset(config.data.train, seed=0, **shape),
+        batch_size=config.optim.micro_batch,
+        workers=config.data.workers,
         train=True,
     )
     val_dataloader = build_dataloader(
-        build_dataset(config.val_dataset, seed=1, **shape),
-        batch_size=config.eval_batch or config.micro_batch,
-        workers=config.workers,
+        build_dataset(config.data.val, seed=1, **shape),
+        batch_size=config.eval.batch or config.optim.micro_batch,
+        workers=config.data.workers,
         train=False,
     )
 
@@ -137,5 +116,5 @@ def train(config: TrainerConfig | None = None, log_interval: int = 10) -> None:
         if step % log_interval == 0:
             print(f"step {step}: loss {loss.item():.4f}")
 
-        if step % config.eval_interval == 0:
-            print(f"step {step}: val loss {evaluate(trainer, config.eval_iters):.4f}")
+        if step % config.eval.interval == 0:
+            print(f"step {step}: val loss {evaluate(trainer, config.eval.iters):.4f}")
