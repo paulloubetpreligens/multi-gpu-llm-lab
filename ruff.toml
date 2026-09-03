@@ -19,6 +19,7 @@ ignore = [
     "D100",  # Missing docstring in public module
     "D104",  # Missing docstring in public package
     "D107",  # Missing docstring in classes `__init__`
+    "D105",  # Missing docstring in magic methods — a docstring on __len__ is noise
 ]
 
 [lint.per-file-ignores]
