@@ -1,8 +1,12 @@
 """Train a model."""
 
+from contextlib import AbstractContextManager, nullcontext
+from dataclasses import dataclass
 from itertools import islice
+from typing import Literal, cast
 
 import torch
+from torch import nn
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, Dataset
 
@@ -14,30 +18,52 @@ from multi_gpu_llm_lab.model import GPT
 OPTIMIZERS: dict[str, bool] = {"adamw": False, "adamw_fused": True}
 
 
+@dataclass(frozen=True)
+class Precision:
+    """The two orthogonal axes a precision mode sets."""
+
+    autocast_dtype: torch.dtype | None
+    matmul: Literal["highest", "high"]
+
+
+PRECISIONS: dict[str, Precision] = {
+    "fp32": Precision(autocast_dtype=None, matmul="highest"),
+    "tf32": Precision(autocast_dtype=None, matmul="high"),
+    "bf16": Precision(autocast_dtype=torch.bfloat16, matmul="high"),
+}
+
+
+@dataclass
 class Trainer:
     """Owns the model, the optimizer and the data pipeline."""
 
-    def __init__(
-        self,
-        model: GPT,
-        optimizer: Optimizer,
-        dataloader: DataLoader,
-        val_dataloader: DataLoader,
-        device: str,
-    ) -> None:
-        self.model = model
-        self.optimizer = optimizer
-        self.dataloader = dataloader
-        self.val_dataloader = val_dataloader
-        self.device = device
+    model: nn.Module
+    optimizer: Optimizer
+    dataloader: DataLoader
+    val_dataloader: DataLoader
+    device: str
+    autocast: AbstractContextManager[None]
 
 
-def build_optimizer(name: str, model: GPT, learning_rate: float) -> Optimizer:
+def build_optimizer(name: str, model: nn.Module, learning_rate: float) -> Optimizer:
     """Return the optimizer registered under `name`."""
     if name not in OPTIMIZERS:
         raise KeyError(f"unknown optimizer {name!r}, expected one of {sorted(OPTIMIZERS)}")
 
     return torch.optim.AdamW(model.parameters(), lr=learning_rate, fused=OPTIMIZERS[name])
+
+
+def apply_precision(device: str, name: str) -> AbstractContextManager[None]:
+    """Set the global fp32 matmul precision and return the autocast context `name` asks for."""
+    if name not in PRECISIONS:
+        raise KeyError(f"unknown precision {name!r}, expected one of {sorted(PRECISIONS)}")
+
+    precision = PRECISIONS[name]
+    torch.set_float32_matmul_precision(precision.matmul)
+    dtype = precision.autocast_dtype
+
+    # No GradScaler: bf16 keeps fp32's exponent range, only the mantissa shrinks.
+    return nullcontext() if dtype is None else torch.autocast(device_type=device, dtype=dtype)
 
 
 def build_dataloader(dataset: Dataset, batch_size: int, workers: int, *, train: bool) -> DataLoader:
@@ -57,8 +83,10 @@ def get_trainer(config: TrainerConfig | None = None) -> Trainer:
     device = select_device() if config.runtime.device == "auto" else config.runtime.device
 
     model_config = build_model_config(config.model)
-    model = GPT(model_config).to(device)
+    model: nn.Module = GPT(model_config).to(device)
     optimizer = build_optimizer(config.optim.name, model, config.optim.learning_rate)
+    if config.runtime.compile:
+        model = cast(nn.Module, torch.compile(model))
     shape = {"block_size": model_config.block_size, "vocab_size": model_config.vocab_size}
     # Seeds differ so the synthetic validation blocks never overlap the training ones.
     dataloader = build_dataloader(
@@ -80,19 +108,20 @@ def get_trainer(config: TrainerConfig | None = None) -> Trainer:
         dataloader=dataloader,
         val_dataloader=val_dataloader,
         device=device,
+        autocast=apply_precision(device, config.runtime.precision),
     )
 
 
-@torch.inference_mode()
+@torch.no_grad()
 def evaluate(trainer: Trainer, eval_iters: int) -> float:
     """Return the mean validation loss over at most `eval_iters` batches."""
     trainer.model.eval()
 
-    # Losses stay on the device until the final mean: one sync per eval instead of one per batch.
-    losses = [
-        trainer.model(inputs.to(trainer.device), targets.to(trainer.device))[1]
-        for inputs, targets in islice(trainer.val_dataloader, eval_iters)
-    ]
+    with trainer.autocast:
+        losses = [
+            trainer.model(inputs.to(trainer.device), targets.to(trainer.device))[1]
+            for inputs, targets in islice(trainer.val_dataloader, eval_iters)
+        ]
 
     trainer.model.train()
 
@@ -108,7 +137,9 @@ def train(config: TrainerConfig | None = None, log_interval: int = 10) -> None:
         x, y = x.to(trainer.device), y.to(trainer.device)
 
         trainer.optimizer.zero_grad(set_to_none=True)
-        loss = trainer.model(x, y)[1]
+        with trainer.autocast:
+            loss = trainer.model(x, y)[1]
+
         loss.backward()
         trainer.optimizer.step()
 

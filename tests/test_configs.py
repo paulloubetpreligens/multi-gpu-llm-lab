@@ -2,6 +2,7 @@ import pytest
 
 from multi_gpu_llm_lab.configs import (
     OptimConfig,
+    RuntimeConfig,
     TrainerConfig,
     build_model_config,
     build_trainer_config,
@@ -101,6 +102,8 @@ def test_config_paths_lists_every_leaf_of_the_tree():
     assert paths == [
         "model",
         "runtime.device",
+        "runtime.precision",
+        "runtime.compile",
         "data.train",
         "data.val",
         "data.workers",
@@ -195,3 +198,20 @@ def test_resolve_trainer_config_types_an_override_the_yaml_scalar_rules_leave_a_
     config = resolve_trainer_config(None, ["optim.learning_rate=1e-3"])
 
     assert config.optim.learning_rate == pytest.approx(1e-3)
+
+
+def test_runtime_config_defaults_to_the_unoptimized_baseline():
+    runtime = RuntimeConfig()
+
+    assert (runtime.precision, runtime.compile) == ("fp32", False)
+
+
+def test_build_trainer_config_reads_a_boolean_flag():
+    config = build_trainer_config({"runtime": {"compile": True}})
+
+    assert config.runtime.compile is True
+
+
+def test_build_trainer_config_with_a_non_boolean_for_a_flag_raises_error():
+    with pytest.raises(ValueError, match="peut-etre"):
+        build_trainer_config({"runtime": {"compile": "peut-etre"}})

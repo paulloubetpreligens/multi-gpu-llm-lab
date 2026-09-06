@@ -30,9 +30,11 @@ def build_model_config(name: str) -> GPTConfig:
 
 @dataclass
 class RuntimeConfig:
-    """Where the run executes."""
+    """Where and how the run executes."""
 
     device: str = "auto"
+    precision: str = "fp32"
+    compile: bool = False
 
 
 @dataclass
@@ -158,4 +160,10 @@ def _coerce(annotation: Any, value: Any) -> Any:
     # YAML resolves `1e-3` to a string, so a leaf is cast to its annotated type rather than trusted.
     target = next((arg for arg in get_args(annotation) if arg is not type(None)), annotation)
 
-    return value if value is None or isinstance(value, target) else target(value)
+    if value is None or isinstance(value, target):
+        return value
+
+    if target is bool:
+        raise ValueError(f"expected a boolean, got {value!r}")
+
+    return target(value)

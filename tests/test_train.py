@@ -1,4 +1,5 @@
 import math
+from contextlib import nullcontext
 
 import pytest
 import torch
@@ -7,7 +8,16 @@ from torch.utils.data import DataLoader, SequentialSampler
 from multi_gpu_llm_lab.configs import DataConfig, OptimConfig, RuntimeConfig, TrainerConfig
 from multi_gpu_llm_lab.data import SyntheticDataset
 from multi_gpu_llm_lab.model import GPT
-from multi_gpu_llm_lab.train import Trainer, evaluate, get_trainer
+from multi_gpu_llm_lab.train import Trainer, apply_precision, evaluate, get_trainer
+
+
+@pytest.fixture(autouse=True)
+def restore_matmul_precision():
+    previous = torch.get_float32_matmul_precision()
+
+    yield
+
+    torch.set_float32_matmul_precision(previous)
 
 
 @pytest.fixture
@@ -24,7 +34,14 @@ def test_trainer_holds_the_parts_it_is_given():
     dataloader = DataLoader(SyntheticDataset(block_size=4, n_blocks=2, vocab_size=8))
     val_dataloader = DataLoader(SyntheticDataset(block_size=4, n_blocks=2, vocab_size=8, seed=1))
 
-    trainer = Trainer(model="m", optimizer="o", dataloader=dataloader, val_dataloader=val_dataloader, device="cpu")
+    trainer = Trainer(
+        model="m",
+        optimizer="o",
+        dataloader=dataloader,
+        val_dataloader=val_dataloader,
+        device="cpu",
+        autocast=nullcontext(),
+    )
 
     assert (trainer.model, trainer.optimizer, trainer.dataloader, trainer.val_dataloader) == (
         "m",
@@ -161,14 +178,14 @@ def test_evaluate_with_more_eval_iters_than_batches_averages_what_it_has(config)
     assert math.isfinite(loss)
 
 
-def test_evaluate_runs_the_forward_pass_in_inference_mode(config):
+def test_evaluate_runs_the_forward_pass_without_recording_gradients(config):
     trainer = get_trainer(config)
-    modes: list[bool] = []
-    trainer.model.register_forward_hook(lambda *_: modes.append(torch.is_inference_mode_enabled()))
+    grad_enabled: list[bool] = []
+    trainer.model.register_forward_hook(lambda *_: grad_enabled.append(torch.is_grad_enabled()))
 
     evaluate(trainer, eval_iters=1)
 
-    assert modes == [True]
+    assert grad_enabled == [False]
 
 
 def test_evaluate_leaves_the_model_in_training_mode(config):
@@ -177,3 +194,107 @@ def test_evaluate_leaves_the_model_in_training_mode(config):
     evaluate(trainer, eval_iters=1)
 
     assert trainer.model.training is True
+
+
+def test_apply_precision_with_bf16_enables_autocast_on_the_device():
+    context = apply_precision("cpu", "bf16")
+
+    with context:
+        assert torch.is_autocast_enabled("cpu")
+
+
+def test_apply_precision_with_fp32_leaves_autocast_disabled():
+    context = apply_precision("cpu", "fp32")
+
+    with context:
+        assert not torch.is_autocast_enabled("cpu")
+
+
+def test_apply_precision_with_tf32_leaves_autocast_disabled():
+    context = apply_precision("cpu", "tf32")
+
+    with context:
+        assert not torch.is_autocast_enabled("cpu")
+
+
+def test_apply_precision_with_fp32_keeps_the_matmuls_exact():
+    apply_precision("cpu", "fp32")
+
+    assert torch.get_float32_matmul_precision() == "highest"
+
+
+def test_apply_precision_with_tf32_lets_the_matmuls_use_tensor_cores():
+    apply_precision("cpu", "tf32")
+
+    assert torch.get_float32_matmul_precision() == "high"
+
+
+def test_apply_precision_with_bf16_lets_the_matmuls_use_tensor_cores():
+    apply_precision("cpu", "bf16")
+
+    assert torch.get_float32_matmul_precision() == "high"
+
+
+def test_apply_precision_with_an_unknown_name_raises_error():
+    with pytest.raises(KeyError):
+        apply_precision("cpu", "fp8")
+
+
+def test_get_trainer_with_bf16_runs_the_model_activations_in_bf16(config):
+    config.runtime.precision = "bf16"
+    trainer = get_trainer(config)
+    inputs, targets = next(iter(trainer.val_dataloader))
+    dtypes: list[torch.dtype] = []
+    trainer.model.transformer.h[0].attn.c_attn.register_forward_hook(
+        lambda module, args, output: dtypes.append(output.dtype)
+    )
+
+    with trainer.autocast:
+        trainer.model(inputs, targets)
+
+    assert dtypes == [torch.bfloat16]
+
+
+def test_get_trainer_with_bf16_keeps_the_parameters_in_fp32(config):
+    config.runtime.precision = "bf16"
+
+    trainer = get_trainer(config)
+
+    assert next(trainer.model.parameters()).dtype == torch.float32
+
+
+def test_get_trainer_defaults_to_fp32_activations(config):
+    trainer = get_trainer(config)
+    inputs, targets = next(iter(trainer.val_dataloader))
+    dtypes: list[torch.dtype] = []
+    trainer.model.transformer.h[0].attn.c_attn.register_forward_hook(
+        lambda module, args, output: dtypes.append(output.dtype)
+    )
+
+    with trainer.autocast:
+        trainer.model(inputs, targets)
+
+    assert dtypes == [torch.float32]
+
+
+def test_get_trainer_with_compile_wraps_the_model(config):
+    config.runtime.compile = True
+
+    trainer = get_trainer(config)
+
+    assert isinstance(trainer.model, torch._dynamo.OptimizedModule)
+
+
+def test_get_trainer_with_tf32_keeps_the_activations_in_fp32(config):
+    config.runtime.precision = "tf32"
+    trainer = get_trainer(config)
+    inputs, targets = next(iter(trainer.val_dataloader))
+    dtypes: list[torch.dtype] = []
+    trainer.model.transformer.h[0].attn.c_attn.register_forward_hook(
+        lambda module, args, output: dtypes.append(output.dtype)
+    )
+
+    with trainer.autocast:
+        trainer.model(inputs, targets)
+
+    assert dtypes == [torch.float32]
