@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader, Dataset
 from multi_gpu_llm_lab.configs import TrainerConfig, build_model_config
 from multi_gpu_llm_lab.data import build_dataset
 from multi_gpu_llm_lab.device import select_device
+from multi_gpu_llm_lab.metrics import build_metrics
 from multi_gpu_llm_lab.model import GPT
 
 OPTIMIZERS: dict[str, bool] = {"adamw": False, "adamw_fused": True}
@@ -132,20 +133,33 @@ def train(config: TrainerConfig | None = None, log_interval: int = 10) -> None:
     """Run a training loop on a single GPU."""
     config = config or TrainerConfig()
     trainer = get_trainer(config)
+    recorder, writer = build_metrics(config, trainer.model, trainer.device)
+    status = "crashed"
 
-    for step, (x, y) in enumerate(trainer.dataloader):
-        x, y = x.to(trainer.device), y.to(trainer.device)
+    try:
+        for step, (x, y) in enumerate(trainer.dataloader):
+            x, y = x.to(trainer.device), y.to(trainer.device)
 
-        trainer.optimizer.zero_grad(set_to_none=True)
-        with trainer.autocast:
-            loss = trainer.model(x, y)[1]
+            with recorder.step(step) as scope:
+                trainer.optimizer.zero_grad(set_to_none=True)
+                with trainer.autocast:
+                    loss = trainer.model(x, y)[1]
 
-        loss.backward()
-        trainer.optimizer.step()
+                loss.backward()
+                trainer.optimizer.step()
+                scope.loss = loss.detach()
 
-        # can be optimized by accumulating loss.detach()
-        if step % log_interval == 0:
-            print(f"step {step}: loss {loss.item():.4f}")
+            record = recorder.records[-1]
+            writer.write_step(record)
 
-        if step % config.eval.interval == 0:
-            print(f"step {step}: val loss {evaluate(trainer, config.eval.iters):.4f}")
+            if step % log_interval == 0:
+                throughput = f"{record.tokens_per_second:,.0f} tok/s | mfu {record.mfu:.4f}"
+                print(f"step {step}: loss {record.loss:.4f} | {throughput}")
+
+            if step % config.eval.interval == 0:
+                print(f"step {step}: val loss {evaluate(trainer, config.eval.iters):.4f}")
+
+        status = "completed"
+    finally:
+        writer.write_run(recorder.summarize(status))
+        writer.close()

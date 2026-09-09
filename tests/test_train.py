@@ -1,14 +1,16 @@
+import csv
 import math
 from contextlib import nullcontext
 
+import numpy as np
 import pytest
 import torch
 from torch.utils.data import DataLoader, SequentialSampler
 
-from multi_gpu_llm_lab.configs import DataConfig, OptimConfig, RuntimeConfig, TrainerConfig
+from multi_gpu_llm_lab.configs import DataConfig, MetricsConfig, OptimConfig, RuntimeConfig, TrainerConfig
 from multi_gpu_llm_lab.data import SyntheticDataset
 from multi_gpu_llm_lab.model import GPT
-from multi_gpu_llm_lab.train import Trainer, apply_precision, evaluate, get_trainer
+from multi_gpu_llm_lab.train import Trainer, apply_precision, evaluate, get_trainer, train
 
 
 @pytest.fixture(autouse=True)
@@ -298,3 +300,81 @@ def test_get_trainer_with_tf32_keeps_the_activations_in_fp32(config):
         trainer.model(inputs, targets)
 
     assert dtypes == [torch.float32]
+
+
+@pytest.fixture
+def metrics_config(config, tmp_path):
+    config.metrics = MetricsConfig(out_dir=str(tmp_path), warmup_steps=1, run_id="run-under-test")
+    config.eval.interval = 10_000
+
+    return config
+
+
+def read_rows(path):
+    with path.open(newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def test_train_writes_one_step_row_per_optimizer_step(metrics_config, tmp_path):
+    train(metrics_config)
+
+    assert len(read_rows(tmp_path / "run-under-test" / "steps.csv")) == 16
+
+
+def test_train_appends_exactly_one_summary_row_per_run(metrics_config, tmp_path):
+    train(metrics_config)
+
+    assert len(read_rows(tmp_path / "runs.csv")) == 1
+
+
+def test_train_reports_a_positive_tokens_per_second(metrics_config, tmp_path):
+    train(metrics_config)
+
+    assert float(read_rows(tmp_path / "runs.csv")[0]["tokens_per_second"]) > 0
+
+
+def test_train_records_the_configured_world_size_in_the_run_row(metrics_config, tmp_path):
+    metrics_config.runtime.world_size = 4
+
+    train(metrics_config)
+
+    assert read_rows(tmp_path / "runs.csv")[0]["world_size"] == "4"
+
+
+def test_train_marks_only_the_warmup_steps_in_the_step_rows(metrics_config, tmp_path):
+    train(metrics_config)
+
+    rows = read_rows(tmp_path / "run-under-test" / "steps.csv")
+
+    assert [row["warmup"] for row in rows].count("True") == 1
+
+
+def test_train_with_metrics_disabled_writes_nothing(metrics_config, tmp_path):
+    metrics_config.metrics.enabled = False
+
+    train(metrics_config)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.fixture
+def poisoned_shard(tmp_path):
+    path = tmp_path / "out_of_vocab.bin"
+    np.full(2048, 60_000, dtype=np.uint16).tofile(path)
+
+    return path
+
+
+def test_train_that_crashes_mid_run_still_records_the_run(metrics_config, poisoned_shard, tmp_path):
+    metrics_config.data.train = str(poisoned_shard)
+
+    with pytest.raises(IndexError):
+        train(metrics_config)
+
+    assert read_rows(tmp_path / "runs.csv")[0]["status"] == "crashed"
+
+
+def test_train_that_completes_records_a_completed_run(metrics_config, tmp_path):
+    train(metrics_config)
+
+    assert read_rows(tmp_path / "runs.csv")[0]["status"] == "completed"

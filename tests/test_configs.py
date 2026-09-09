@@ -104,6 +104,7 @@ def test_config_paths_lists_every_leaf_of_the_tree():
         "runtime.device",
         "runtime.precision",
         "runtime.compile",
+        "runtime.world_size",
         "data.train",
         "data.val",
         "data.workers",
@@ -113,6 +114,12 @@ def test_config_paths_lists_every_leaf_of_the_tree():
         "eval.interval",
         "eval.iters",
         "eval.batch",
+        "metrics.enabled",
+        "metrics.out_dir",
+        "metrics.warmup_steps",
+        "metrics.run_id",
+        "metrics.peak_flops",
+        "metrics.peak_flops_label",
     ]
 
 

@@ -35,6 +35,7 @@ class RuntimeConfig:
     device: str = "auto"
     precision: str = "fp32"
     compile: bool = False
+    world_size: int = 1
 
 
 @dataclass
@@ -64,6 +65,23 @@ class EvalConfig:
     batch: int | None = None
 
 
+# Peak FLOPs is a datasheet figure for one device at one dtype: set both together, per machine.
+PEAK_FLOPS = 312e12
+PEAK_FLOPS_LABEL = "A100 bf16 dense"
+
+
+@dataclass
+class MetricsConfig:
+    """Where the run's throughput, MFU and memory artifacts land."""
+
+    enabled: bool = True
+    out_dir: str = "out/metrics"
+    warmup_steps: int = 5
+    run_id: str | None = None
+    peak_flops: float = PEAK_FLOPS
+    peak_flops_label: str = PEAK_FLOPS_LABEL
+
+
 @dataclass
 class TrainerConfig:
     """Names resolved to objects by `get_trainer`.
@@ -76,6 +94,7 @@ class TrainerConfig:
     data: DataConfig = field(default_factory=DataConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
+    metrics: MetricsConfig = field(default_factory=MetricsConfig)
 
 
 def load_document(path: str | Path) -> dict[str, Any]:
