@@ -1,9 +1,10 @@
 """Train a model."""
 
+from collections.abc import Iterator
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
-from itertools import islice
-from typing import Literal, cast
+from itertools import chain, islice, repeat
+from typing import Any, Literal, cast
 
 import torch
 from torch import nn
@@ -65,6 +66,14 @@ def apply_precision(device: str, name: str) -> AbstractContextManager[None]:
 
     # No GradScaler: bf16 keeps fp32's exponent range, only the mantissa shrinks.
     return nullcontext() if dtype is None else torch.autocast(device_type=device, dtype=dtype)
+
+
+def iterate_batches(dataloader: DataLoader, max_steps: int | None) -> Iterator[Any]:
+    """Yield one batch per optimizer step, re-reading the dataset as many times as `max_steps` needs."""
+    if max_steps is None:
+        return iter(dataloader)
+
+    return islice(chain.from_iterable(repeat(dataloader)), max_steps)
 
 
 def build_dataloader(dataset: Dataset, batch_size: int, workers: int, *, train: bool) -> DataLoader:
@@ -137,7 +146,7 @@ def train(config: TrainerConfig | None = None, log_interval: int = 10) -> None:
     status = "crashed"
 
     try:
-        for step, (x, y) in enumerate(trainer.dataloader):
+        for step, (x, y) in enumerate(iterate_batches(trainer.dataloader, config.optim.max_steps)):
             x, y = x.to(trainer.device), y.to(trainer.device)
 
             with recorder.step(step) as scope:

@@ -11,6 +11,18 @@ def test_app_exposes_a_train_command():
     assert "train" in result.stdout
 
 
+def test_app_exposes_a_prepare_command():
+    result = runner.invoke(app, ["--help"])
+
+    assert "prepare" in result.stdout
+
+
+def test_prepare_help_documents_the_output_directory_option():
+    result = runner.invoke(app, ["prepare", "--help"])
+
+    assert "--out-dir" in result.stdout
+
+
 def test_train_help_documents_the_config_option():
     result = runner.invoke(app, ["train", "--help"])
 

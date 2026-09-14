@@ -349,6 +349,22 @@ def test_train_marks_only_the_warmup_steps_in_the_step_rows(metrics_config, tmp_
     assert [row["warmup"] for row in rows].count("True") == 1
 
 
+def test_train_with_max_steps_stops_before_the_epoch_ends(metrics_config, tmp_path):
+    metrics_config.optim.max_steps = 3
+
+    train(metrics_config)
+
+    assert len(read_rows(tmp_path / "run-under-test" / "steps.csv")) == 3
+
+
+def test_train_with_max_steps_beyond_one_epoch_keeps_reading_the_dataset(metrics_config, tmp_path):
+    metrics_config.optim.max_steps = 20
+
+    train(metrics_config)
+
+    assert len(read_rows(tmp_path / "run-under-test" / "steps.csv")) == 20
+
+
 def test_train_with_metrics_disabled_writes_nothing(metrics_config, tmp_path):
     metrics_config.metrics.enabled = False
 

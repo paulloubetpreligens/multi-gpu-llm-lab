@@ -111,6 +111,7 @@ def test_config_paths_lists_every_leaf_of_the_tree():
         "optim.name",
         "optim.learning_rate",
         "optim.micro_batch",
+        "optim.max_steps",
         "eval.interval",
         "eval.iters",
         "eval.batch",

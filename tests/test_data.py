@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from multi_gpu_llm_lab.data import SyntheticDataset, TokenDataset, build_dataset
+from multi_gpu_llm_lab.data import SyntheticDataset, TokenDataset, build_dataset, encode_text, write_shards
 
 BLOCK_SIZE = 8
 
@@ -69,3 +69,57 @@ def test_build_dataset_with_synthetic_name_and_a_different_seed_yields_different
     other_seed = build_dataset("synthetic", block_size=BLOCK_SIZE, vocab_size=17, seed=1)
 
     assert not torch.equal(default_seed[0][0], other_seed[0][0])
+
+
+def test_write_shards_writes_a_train_and_a_val_shard(tmp_path):
+    train_path, val_path = write_shards(np.arange(100, dtype=np.uint16), tmp_path)
+
+    assert train_path.is_file() and val_path.is_file()
+
+
+def test_write_shards_holds_out_the_requested_fraction(tmp_path):
+    _, val_path = write_shards(np.arange(100, dtype=np.uint16), tmp_path, val_fraction=0.1)
+
+    assert np.fromfile(val_path, dtype=np.uint16).size == 10
+
+
+def test_write_shards_keeps_every_token_across_both_shards(tmp_path):
+    tokens = np.arange(100, dtype=np.uint16)
+
+    train_path, val_path = write_shards(tokens, tmp_path)
+
+    reloaded = np.concatenate([np.fromfile(path, dtype=np.uint16) for path in (train_path, val_path)])
+    assert np.array_equal(reloaded, tokens)
+
+
+def test_write_shards_gives_the_validation_shard_the_tail_of_the_tokens(tmp_path):
+    _, val_path = write_shards(np.arange(100, dtype=np.uint16), tmp_path, val_fraction=0.1)
+
+    assert np.fromfile(val_path, dtype=np.uint16)[0] == 90
+
+
+def test_write_shards_with_a_fraction_of_zero_raises_error(tmp_path):
+    with pytest.raises(ValueError, match="val_fraction"):
+        write_shards(np.arange(100, dtype=np.uint16), tmp_path, val_fraction=0.0)
+
+
+def test_write_shards_creates_a_missing_output_directory(tmp_path):
+    target = tmp_path / "deep" / "nested"
+
+    write_shards(np.arange(100, dtype=np.uint16), target)
+
+    assert target.is_dir()
+
+
+def test_token_dataset_reads_a_shard_that_write_shards_produced(tmp_path):
+    train_path, _ = write_shards(np.arange(100, dtype=np.uint16), tmp_path)
+
+    dataset = TokenDataset(train_path, block_size=BLOCK_SIZE)
+
+    assert len(dataset) == 11
+
+
+def test_encode_text_returns_tokens_in_the_shard_dtype():
+    tokens = encode_text("To be, or not to be")
+
+    assert tokens.dtype == np.uint16

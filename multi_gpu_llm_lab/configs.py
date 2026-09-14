@@ -54,6 +54,7 @@ class OptimConfig:
     name: str = "adamw"
     learning_rate: float = 6e-4
     micro_batch: int = 4
+    max_steps: int | None = None
 
 
 @dataclass
