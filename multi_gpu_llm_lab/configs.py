@@ -37,6 +37,7 @@ class RuntimeConfig:
     compile: bool = False
     ddp: bool = False
     world_size: int = 1
+    seed: int = 1337
 
 
 @dataclass

@@ -106,6 +106,7 @@ def test_config_paths_lists_every_leaf_of_the_tree():
         "runtime.compile",
         "runtime.ddp",
         "runtime.world_size",
+        "runtime.seed",
         "data.train",
         "data.val",
         "data.workers",

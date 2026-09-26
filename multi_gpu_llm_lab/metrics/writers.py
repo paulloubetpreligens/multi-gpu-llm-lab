@@ -59,6 +59,7 @@ RUN_ROW: Mapping[str, RunCell] = {
     "micro_batch": lambda summary, spec: spec.micro_batch,
     "block_size": lambda summary, spec: spec.block_size,
     "world_size": lambda summary, spec: spec.world_size,
+    "seed": lambda summary, spec: spec.seed,
     "n_params": lambda summary, spec: spec.n_params,
     "flops_per_token": lambda summary, spec: spec.flops_per_token,
     "peak_flops": lambda summary, spec: spec.peak_flops,

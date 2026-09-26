@@ -88,7 +88,7 @@ def iterate_batches(dataloader: DataLoader, max_steps: int | None) -> Iterator[A
     return islice(chain.from_iterable(passes(dataloader)), max_steps)
 
 
-def build_sampler(dataset: Dataset, distributed: Distributed, *, train: bool) -> Sampler[int] | None:
+def build_sampler(dataset: Dataset, distributed: Distributed, *, train: bool, seed: int = 0) -> Sampler[int] | None:
     """Return the sampler handing this rank its share of `dataset`, or None to let the dataloader decide."""
     if distributed.world_size == 1:
         return None
@@ -98,6 +98,7 @@ def build_sampler(dataset: Dataset, distributed: Distributed, *, train: bool) ->
         num_replicas=distributed.world_size,
         rank=distributed.rank,
         shuffle=train,
+        seed=seed,
         drop_last=train,
     )
 
@@ -109,9 +110,10 @@ def build_dataloader(
     *,
     train: bool,
     distributed: Distributed = SINGLE_PROCESS,
+    seed: int = 0,
 ) -> DataLoader:
     """Return a dataloader over this rank's share of `dataset`, shuffling and dropping the tail only when training."""
-    sampler = build_sampler(dataset, distributed, train=train)
+    sampler = build_sampler(dataset, distributed, train=train, seed=seed)
 
     return DataLoader(
         dataset,
@@ -129,6 +131,7 @@ def get_trainer(config: TrainerConfig | None = None) -> Trainer:
     config = config or TrainerConfig()
     device = select_device() if config.runtime.device == "auto" else config.runtime.device
     distributed = init_distributed(config.runtime, device)
+    torch.manual_seed(config.runtime.seed)
 
     model_config = build_model_config(config.model)
     model: nn.Module = GPT(model_config).to(device)
@@ -140,18 +143,20 @@ def get_trainer(config: TrainerConfig | None = None) -> Trainer:
     shape = {"block_size": model_config.block_size, "vocab_size": model_config.vocab_size}
     # Seeds differ so the synthetic validation blocks never overlap the training ones.
     dataloader = build_dataloader(
-        build_dataset(config.data.train, seed=0, **shape),
+        build_dataset(config.data.train, seed=config.runtime.seed, **shape),
         batch_size=config.optim.micro_batch,
         workers=config.data.workers,
         train=True,
         distributed=distributed,
+        seed=config.runtime.seed,
     )
     val_dataloader = build_dataloader(
-        build_dataset(config.data.val, seed=1, **shape),
+        build_dataset(config.data.val, seed=config.runtime.seed + 1, **shape),
         batch_size=config.eval.batch or config.optim.micro_batch,
         workers=config.data.workers,
         train=False,
         distributed=distributed,
+        seed=config.runtime.seed,
     )
 
     return Trainer(

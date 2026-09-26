@@ -316,13 +316,14 @@ def sharded_dataset():
     return SyntheticDataset(block_size=4, n_blocks=8, vocab_size=8)
 
 
-def build_rank_dataloader(dataset, rank, world_size):
+def build_rank_dataloader(dataset, rank, world_size, seed=0):
     return build_dataloader(
         dataset,
         batch_size=1,
         workers=0,
         train=True,
         distributed=Distributed(rank=rank, local_rank=rank, world_size=world_size),
+        seed=seed,
     )
 
 
@@ -362,6 +363,42 @@ def test_iterate_batches_across_two_passes_reshuffles_the_distributed_sampler(sh
     list(iterate_batches(dataloader, max_steps=5))
 
     assert dataloader.sampler.epoch == 1
+
+
+def test_build_dataloader_with_two_ranks_orders_the_shard_by_the_given_seed(sharded_dataset):
+    orders = [list(build_rank_dataloader(sharded_dataset, 0, world_size=2, seed=seed).sampler) for seed in (7, 8)]
+
+    assert orders[0] != orders[1]
+
+
+def seeded_trainer(config, seed):
+    config.runtime.seed = seed
+
+    return get_trainer(config)
+
+
+def test_get_trainer_with_the_same_seed_twice_builds_identical_weights(config):
+    weights = [seeded_trainer(config, 7).model.lm_head.weight for _ in range(2)]
+
+    assert torch.equal(*weights)
+
+
+def test_get_trainer_with_a_different_seed_builds_different_weights(config):
+    weights = [seeded_trainer(config, seed).model.lm_head.weight for seed in (7, 8)]
+
+    assert not torch.equal(*weights)
+
+
+def test_get_trainer_with_a_different_seed_draws_different_synthetic_blocks(config):
+    blocks = [seeded_trainer(config, seed).dataloader.dataset[0][0] for seed in (7, 8)]
+
+    assert not torch.equal(*blocks)
+
+
+def test_get_trainer_seeds_the_validation_blocks_apart_from_the_training_ones(config):
+    trainer = seeded_trainer(config, 7)
+
+    assert not torch.equal(trainer.dataloader.dataset[0][0], trainer.val_dataloader.dataset[0][0])
 
 
 @pytest.fixture

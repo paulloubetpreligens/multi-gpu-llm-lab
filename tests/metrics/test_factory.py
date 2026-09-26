@@ -38,6 +38,15 @@ def test_build_metrics_records_the_configured_peak_flops_label(tmp_path):
     assert writer.spec.peak_flops_label == "RTX 4090 bf16 dense"
 
 
+def test_build_metrics_records_the_seed_the_run_used(tmp_path):
+    config = build_config(tmp_path)
+    config.runtime.seed = 7
+
+    _, writer = build_metrics(config, build_model(), "cpu")
+
+    assert writer.spec.seed == 7
+
+
 def test_build_metrics_records_the_torch_version(tmp_path):
     config = build_config(tmp_path)
 

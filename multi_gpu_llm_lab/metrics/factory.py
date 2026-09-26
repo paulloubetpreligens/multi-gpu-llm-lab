@@ -116,6 +116,7 @@ def build_metrics(config: TrainerConfig, model: nn.Module, device: str) -> tuple
         micro_batch=config.optim.micro_batch,
         block_size=model_config.block_size,
         world_size=world_size,
+        seed=config.runtime.seed,
         n_params=n_params,
         flops_per_token=recorder.workload.flops_per_token,
         warmup_steps=config.metrics.warmup_steps,

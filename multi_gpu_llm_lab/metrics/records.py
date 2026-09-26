@@ -165,6 +165,9 @@ class RunSpec:
     world_size: int
     """Ranks taking part in the run, read from the live process group when there is one."""
 
+    seed: int
+    """Seed behind the weight init and the data order; the run is not reproducible without it."""
+
     n_params: int
     """Parameter count of the model, embeddings excluded per get_num_params."""
 
