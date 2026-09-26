@@ -2,6 +2,7 @@ import platform
 import re
 
 import torch
+from torch.nn.parallel import DistributedDataParallel
 
 from multi_gpu_llm_lab.configs import MetricsConfig, RuntimeConfig, TrainerConfig
 from multi_gpu_llm_lab.metrics.factory import build_metrics, device_name, git_revision
@@ -67,3 +68,17 @@ def test_git_revision_outside_a_checkout_returns_none(tmp_path):
 
 def test_device_name_without_a_gpu_returns_the_host_architecture():
     assert device_name("cpu") == platform.machine()
+
+
+def test_build_metrics_reads_the_block_size_through_a_ddp_wrapper(tmp_path):
+    torch.distributed.init_process_group(
+        backend="gloo", init_method=f"file://{tmp_path / 'store'}", rank=0, world_size=1
+    )
+    config = build_config(tmp_path)
+
+    try:
+        recorder, _ = build_metrics(config, DistributedDataParallel(build_model()), "cpu")
+    finally:
+        torch.distributed.destroy_process_group()
+
+    assert recorder.workload.block_size == 8

@@ -2,18 +2,20 @@
 
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass
-from itertools import chain, islice, repeat
+from dataclasses import dataclass, field
+from itertools import chain, count, islice
 from typing import Any, Literal, cast
 
 import torch
 from torch import nn
+from torch.nn.parallel import DistributedDataParallel
 from torch.optim import Optimizer
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, DistributedSampler, Sampler
 
 from multi_gpu_llm_lab.configs import TrainerConfig, build_model_config
 from multi_gpu_llm_lab.data import build_dataset
 from multi_gpu_llm_lab.device import select_device
+from multi_gpu_llm_lab.distributed import SINGLE_PROCESS, Distributed, init_distributed, shutdown_distributed
 from multi_gpu_llm_lab.metrics import build_metrics
 from multi_gpu_llm_lab.model import GPT
 
@@ -45,6 +47,7 @@ class Trainer:
     val_dataloader: DataLoader
     device: str
     autocast: AbstractContextManager[None]
+    distributed: Distributed = field(default_factory=Distributed)
 
 
 def build_optimizer(name: str, model: nn.Module, learning_rate: float) -> Optimizer:
@@ -68,20 +71,54 @@ def apply_precision(device: str, name: str) -> AbstractContextManager[None]:
     return nullcontext() if dtype is None else torch.autocast(device_type=device, dtype=dtype)
 
 
+def passes(dataloader: DataLoader) -> Iterator[DataLoader]:
+    """Yield the dataloader once per pass over the dataset, re-seeding the shuffle each time."""
+    for epoch in count():
+        if isinstance(dataloader.sampler, DistributedSampler):
+            dataloader.sampler.set_epoch(epoch)
+
+        yield dataloader
+
+
 def iterate_batches(dataloader: DataLoader, max_steps: int | None) -> Iterator[Any]:
     """Yield one batch per optimizer step, re-reading the dataset as many times as `max_steps` needs."""
     if max_steps is None:
         return iter(dataloader)
 
-    return islice(chain.from_iterable(repeat(dataloader)), max_steps)
+    return islice(chain.from_iterable(passes(dataloader)), max_steps)
 
 
-def build_dataloader(dataset: Dataset, batch_size: int, workers: int, *, train: bool) -> DataLoader:
-    """Return a dataloader over `dataset`, shuffling and dropping the tail only when training."""
+def build_sampler(dataset: Dataset, distributed: Distributed, *, train: bool) -> Sampler[int] | None:
+    """Return the sampler handing this rank its share of `dataset`, or None to let the dataloader decide."""
+    if distributed.world_size == 1:
+        return None
+
+    return DistributedSampler(
+        dataset,
+        num_replicas=distributed.world_size,
+        rank=distributed.rank,
+        shuffle=train,
+        drop_last=train,
+    )
+
+
+def build_dataloader(
+    dataset: Dataset,
+    batch_size: int,
+    workers: int,
+    *,
+    train: bool,
+    distributed: Distributed = SINGLE_PROCESS,
+) -> DataLoader:
+    """Return a dataloader over this rank's share of `dataset`, shuffling and dropping the tail only when training."""
+    sampler = build_sampler(dataset, distributed, train=train)
+
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=train,
+        # shuffle and sampler are mutually exclusive: the sampler owns the order once there is one.
+        shuffle=train and sampler is None,
+        sampler=sampler,
         num_workers=workers,
         drop_last=train,
     )
@@ -91,10 +128,13 @@ def get_trainer(config: TrainerConfig | None = None) -> Trainer:
     """Build every part described by `config` and hand them to a trainer."""
     config = config or TrainerConfig()
     device = select_device() if config.runtime.device == "auto" else config.runtime.device
+    distributed = init_distributed(config.runtime, device)
 
     model_config = build_model_config(config.model)
     model: nn.Module = GPT(model_config).to(device)
     optimizer = build_optimizer(config.optim.name, model, config.optim.learning_rate)
+    if distributed.world_size > 1:
+        model = DistributedDataParallel(model, device_ids=[distributed.local_rank])
     if config.runtime.compile:
         model = cast(nn.Module, torch.compile(model))
     shape = {"block_size": model_config.block_size, "vocab_size": model_config.vocab_size}
@@ -104,12 +144,14 @@ def get_trainer(config: TrainerConfig | None = None) -> Trainer:
         batch_size=config.optim.micro_batch,
         workers=config.data.workers,
         train=True,
+        distributed=distributed,
     )
     val_dataloader = build_dataloader(
         build_dataset(config.data.val, seed=1, **shape),
         batch_size=config.eval.batch or config.optim.micro_batch,
         workers=config.data.workers,
         train=False,
+        distributed=distributed,
     )
 
     return Trainer(
@@ -119,6 +161,7 @@ def get_trainer(config: TrainerConfig | None = None) -> Trainer:
         val_dataloader=val_dataloader,
         device=device,
         autocast=apply_precision(device, config.runtime.precision),
+        distributed=distributed,
     )
 
 
@@ -139,10 +182,12 @@ def evaluate(trainer: Trainer, eval_iters: int) -> float:
 
 
 def train(config: TrainerConfig | None = None, log_interval: int = 10) -> None:
-    """Run a training loop on a single GPU."""
+    """Run a training loop over every rank the launcher spawned."""
     config = config or TrainerConfig()
     trainer = get_trainer(config)
     recorder, writer = build_metrics(config, trainer.model, trainer.device)
+    # Every rank prints: the losses differ because only the gradients are all-reduced, not the batches.
+    tag = f"[rank {trainer.distributed.rank}] " if trainer.distributed.world_size > 1 else ""
     status = "crashed"
 
     try:
@@ -163,12 +208,13 @@ def train(config: TrainerConfig | None = None, log_interval: int = 10) -> None:
 
             if step % log_interval == 0:
                 throughput = f"{record.tokens_per_second:,.0f} tok/s | mfu {record.mfu:.4f}"
-                print(f"step {step}: loss {record.loss:.4f} | {throughput}")
+                print(f"{tag}step {step}: loss {record.loss:.4f} | {throughput}")
 
             if step % config.eval.interval == 0:
-                print(f"step {step}: val loss {evaluate(trainer, config.eval.iters):.4f}")
+                print(f"{tag}step {step}: val loss {evaluate(trainer, config.eval.iters):.4f}")
 
         status = "completed"
     finally:
         writer.write_run(recorder.summarize(status))
         writer.close()
+        shutdown_distributed()

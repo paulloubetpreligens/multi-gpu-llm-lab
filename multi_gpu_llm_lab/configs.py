@@ -35,6 +35,7 @@ class RuntimeConfig:
     device: str = "auto"
     precision: str = "fp32"
     compile: bool = False
+    ddp: bool = False
     world_size: int = 1
 
 

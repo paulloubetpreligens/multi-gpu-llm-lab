@@ -13,6 +13,7 @@ import torch
 from torch import nn
 
 from multi_gpu_llm_lab.configs import TrainerConfig
+from multi_gpu_llm_lab.distributed import unwrap
 from multi_gpu_llm_lab.metrics.probes import build_barrier, build_memory_probe
 from multi_gpu_llm_lab.metrics.recorder import MetricsRecorder, model_flops_per_token
 from multi_gpu_llm_lab.metrics.records import Hardware, RunSpec, Workload
@@ -79,8 +80,9 @@ def build_run_id(config: TrainerConfig, device: str, world_size: int, started_at
 def build_metrics(config: TrainerConfig, model: nn.Module, device: str) -> tuple[MetricsRecorder, Writer]:
     """Assemble the recorder that measures a run and the writer that persists it."""
     world_size = resolve_world_size(config.runtime.world_size)
-    model_config = cast(GPTConfig, model.config)
-    count_params = cast(Callable[[], int], model.get_num_params)
+    replica = unwrap(model)
+    model_config = cast(GPTConfig, replica.config)
+    count_params = cast(Callable[[], int], replica.get_num_params)
     n_params = count_params()
     started_at = datetime.now(UTC)
 

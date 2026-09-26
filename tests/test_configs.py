@@ -104,6 +104,7 @@ def test_config_paths_lists_every_leaf_of_the_tree():
         "runtime.device",
         "runtime.precision",
         "runtime.compile",
+        "runtime.ddp",
         "runtime.world_size",
         "data.train",
         "data.val",

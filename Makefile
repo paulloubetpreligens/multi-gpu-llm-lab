@@ -9,3 +9,6 @@ check: # run quality checks
 	uv run ruff format --check .
 	uv run ruff check .
 	uv run mypy --exclude 'multi_gpu_llm_lab/model\.py$$' multi_gpu_llm_lab/
+
+test: # run the test suite
+	uv run pytest

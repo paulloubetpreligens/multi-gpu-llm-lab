@@ -5,12 +5,21 @@ from contextlib import nullcontext
 import numpy as np
 import pytest
 import torch
-from torch.utils.data import DataLoader, SequentialSampler
+from torch.utils.data import DataLoader, DistributedSampler, SequentialSampler
 
 from multi_gpu_llm_lab.configs import DataConfig, MetricsConfig, OptimConfig, RuntimeConfig, TrainerConfig
 from multi_gpu_llm_lab.data import SyntheticDataset
+from multi_gpu_llm_lab.distributed import Distributed
 from multi_gpu_llm_lab.model import GPT
-from multi_gpu_llm_lab.train import Trainer, apply_precision, evaluate, get_trainer, train
+from multi_gpu_llm_lab.train import (
+    Trainer,
+    apply_precision,
+    build_dataloader,
+    evaluate,
+    get_trainer,
+    iterate_batches,
+    train,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -300,6 +309,59 @@ def test_get_trainer_with_tf32_keeps_the_activations_in_fp32(config):
         trainer.model(inputs, targets)
 
     assert dtypes == [torch.float32]
+
+
+@pytest.fixture
+def sharded_dataset():
+    return SyntheticDataset(block_size=4, n_blocks=8, vocab_size=8)
+
+
+def build_rank_dataloader(dataset, rank, world_size):
+    return build_dataloader(
+        dataset,
+        batch_size=1,
+        workers=0,
+        train=True,
+        distributed=Distributed(rank=rank, local_rank=rank, world_size=world_size),
+    )
+
+
+def test_build_dataloader_without_ddp_leaves_the_sampler_alone(sharded_dataset):
+    dataloader = build_rank_dataloader(sharded_dataset, rank=0, world_size=1)
+
+    assert not isinstance(dataloader.sampler, DistributedSampler)
+
+
+def test_build_dataloader_with_two_ranks_gives_each_rank_a_disjoint_slice(sharded_dataset):
+    first, second = (build_rank_dataloader(sharded_dataset, rank, world_size=2) for rank in (0, 1))
+
+    assert set(first.sampler).isdisjoint(set(second.sampler))
+
+
+def test_build_dataloader_with_two_ranks_covers_the_whole_dataset(sharded_dataset):
+    first, second = (build_rank_dataloader(sharded_dataset, rank, world_size=2) for rank in (0, 1))
+
+    assert set(first.sampler) | set(second.sampler) == set(range(8))
+
+
+def test_build_dataloader_with_two_ranks_halves_the_steps_each_rank_walks(sharded_dataset):
+    dataloader = build_rank_dataloader(sharded_dataset, rank=0, world_size=2)
+
+    assert len(list(dataloader)) == 4
+
+
+def test_build_dataloader_with_two_ranks_still_shuffles_the_training_order(sharded_dataset):
+    dataloader = build_rank_dataloader(sharded_dataset, rank=0, world_size=2)
+
+    assert list(dataloader.sampler) != sorted(dataloader.sampler)
+
+
+def test_iterate_batches_across_two_passes_reshuffles_the_distributed_sampler(sharded_dataset):
+    dataloader = build_rank_dataloader(sharded_dataset, rank=0, world_size=2)
+
+    list(iterate_batches(dataloader, max_steps=5))
+
+    assert dataloader.sampler.epoch == 1
 
 
 @pytest.fixture
