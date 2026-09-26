@@ -16,6 +16,7 @@ class Distributed:
     rank: int = 0
     local_rank: int = 0
     world_size: int = 1
+    ddp: bool = False
 
 
 SINGLE_PROCESS = Distributed()
@@ -41,13 +42,14 @@ def resolve_distributed(runtime: RuntimeConfig, device: str) -> Distributed:
         rank=int(os.environ["RANK"]),
         local_rank=int(os.environ["LOCAL_RANK"]),
         world_size=world_size,
+        ddp=True,
     )
 
 
 def init_distributed(runtime: RuntimeConfig, device: str) -> Distributed:
     """Join the process group torchrun set up, or stay single-process when DDP is off."""
     distributed = resolve_distributed(runtime, device)
-    if distributed.world_size == 1:
+    if not distributed.ddp:
         return distributed
 
     # set_device before any allocation, so plain "cuda" means this rank's GPU everywhere downstream.

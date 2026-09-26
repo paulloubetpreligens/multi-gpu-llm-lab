@@ -55,7 +55,30 @@ def test_resolve_distributed_with_ddp_adopts_the_ranks_torchrun_assigned(two_ran
 
     distributed = resolve_distributed(runtime, device="cuda")
 
-    assert distributed == Distributed(rank=1, local_rank=1, world_size=2)
+    assert distributed == Distributed(rank=1, local_rank=1, world_size=2, ddp=True)
+
+
+@pytest.fixture
+def one_rank(monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("LOCAL_RANK", "0")
+
+
+def test_resolve_distributed_under_a_single_rank_launcher_still_reports_ddp(one_rank):
+    runtime = RuntimeConfig(device="cuda", ddp=True)
+
+    distributed = resolve_distributed(runtime, device="cuda")
+
+    assert distributed.ddp
+
+
+def test_resolve_distributed_without_ddp_reports_no_ddp():
+    runtime = RuntimeConfig(device="cpu")
+
+    distributed = resolve_distributed(runtime, device="cpu")
+
+    assert not distributed.ddp
 
 
 @pytest.fixture

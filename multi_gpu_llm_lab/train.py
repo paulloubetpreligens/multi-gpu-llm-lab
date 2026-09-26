@@ -133,7 +133,7 @@ def get_trainer(config: TrainerConfig | None = None) -> Trainer:
     model_config = build_model_config(config.model)
     model: nn.Module = GPT(model_config).to(device)
     optimizer = build_optimizer(config.optim.name, model, config.optim.learning_rate)
-    if distributed.world_size > 1:
+    if distributed.ddp:
         model = DistributedDataParallel(model, device_ids=[distributed.local_rank])
     if config.runtime.compile:
         model = cast(nn.Module, torch.compile(model))
